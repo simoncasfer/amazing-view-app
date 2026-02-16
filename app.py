@@ -85,7 +85,7 @@ codigo_map = {
     "Amazing View 6 + Pool + Gym- Barranco & Miraflores": "1010",
     "Amazing View 7 + Pool + Gym- Barranco & Miraflores": "810",
     "Casa increible con AC + Jardín + Centrico": "Casa de Tarapoto",
-    "Apartamento increíble y lujoso ll - Jesús María": "1103 Botanika (Jesús María)"
+    "Amazing & Luxury Apart ll - Jesus Maria": "1103 Botanika (Jesús María)"
 }
 
 df["Codigo_corto"] = df["Anuncio"].map(codigo_map).fillna("SIN CODIGO")
