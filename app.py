@@ -74,18 +74,18 @@ df["Hasta_solo_fecha"] = df["Hasta"].dt.date
 # =========================
 codigo_map = {
     "Amazing Apart + Pool + Gym- Miraflores & Surquillo": "203 (Surquillo)",
-    "Amazing & Luxury Apart - San Isidro & Magdalena": "307 (Magdalena)",
+    "Elegant Designer 1BR | Near San Isidro": "307 (Magdalena)",
     "Amazing Apart + Pool + Gym - Barranco & Miraflores": "508",
-    "Amazing & Luxury Apart - Jesus Maria": "2105 (Jesus Maria)",
+    "Luxury Designer 1BR w/ Balcony": "2105 (Jesus Maria)",
     "Amazing View + Pool + Gym - Barranco & Miraflores": "1103",
     "Amazing View 2 + Pool + Gym- Barranco & Miraflores": "1003",
     "Amazing View 3 + Pool + Gym- Barranco & Miraflores": "1415",
     "Amazing View 4 + Pool + Gym- Barranco & Miraflores": "1008",
     "Amazing View 5 + Pool + Gym- Barranco & Miraflores": "1716",
-    "Amazing View 6 + Pool + Gym- Barranco & Miraflores": "1010",
-    "Amazing View 7 + Pool + Gym- Barranco & Miraflores": "810",
+    "Stylish 1BR | Pool & Gym | Near Miraflores": "1010",
+    "Amazing 2BR Apart w/ Pool & Gym - Barranco": "810",
     "Casa increible con AC + Jardín + Centrico": "Casa de Tarapoto",
-    "Amazing & Luxury Apart ll - Jesus Maria": "1103 Botanika (Jesús María)"
+    "Spacious Designer 1BR w/ Balcony Near San Isidro": "1103 Botanika (Jesús María)"
 }
 
 df["Codigo_corto"] = df["Anuncio"].map(codigo_map).fillna("SIN CODIGO")
