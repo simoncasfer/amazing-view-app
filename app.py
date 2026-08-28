@@ -97,7 +97,7 @@ codigo_map = {
     "Casa increible con AC + Jardín + Centrico": "Casa de Tarapoto",
     "Comfortable 3BR Apartment with City View": "2007 (Pueblo Libre)",
     "Bright 2BR Apartment in Great Location": "401 (Canevaro)",
-    "Spacious Designer 1BR w/ Balcony Near San Isidro": "1103 Botanika (Jesús María)"
+    "Spacious Designer 1BR w/ Balcony Near San Isidro": "1103 Botanika (Jesús María)",
     "San Bartolo | Vista al mar + Piscina & Gym": "302 MIRA (San Bartolo)"
 }
 
