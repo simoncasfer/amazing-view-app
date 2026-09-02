@@ -29,10 +29,60 @@ with st.sidebar:
 st.title("Gestión de Reservas Airbnb")
 
 # =========================
+# Normalizar CSV de Airbnb (viejo "Reservas" o nuevo "Ingresos > Próximos")
+# =========================
+def normalizar_reservas(df_raw):
+    """
+    Airbnb dejó de ofrecer el CSV clásico de 'Lista de reservas'.
+    Ahora exporta reportes de Ingresos (Próximos), que tienen columnas
+    distintas. Esta función detecta cuál formato es y lo convierte a la
+    misma estructura que ya usa el resto del programa (Estado, Anuncio,
+    Hasta, 'Nombre del huésped', 'Fecha de inicio', etc.)
+    """
+    df_raw = df_raw.copy()
+
+    es_formato_nuevo = "Huésped" in df_raw.columns and "Tipo" in df_raw.columns
+
+    if not es_formato_nuevo:
+        return df_raw  # Formato viejo: no se toca nada
+
+    # Solo nos interesan filas que son una estadía real.
+    # 'Cobro como coanfitrión', 'Ajuste', 'Pago de la resolución', etc.
+    # son movimientos de dinero, no huéspedes.
+    if "Tipo" in df_raw.columns:
+        df_raw = df_raw[df_raw["Tipo"].astype(str).str.strip() == "Reservación"].copy()
+
+    df_raw = df_raw.rename(columns={
+        "Huésped": "Nombre del huésped",
+        "Fecha de finalización": "Hasta",
+    })
+
+    # OJO: el CSV nuevo (Ingresos) trae las fechas en formato
+    # mes/día/año (americano), a diferencia del CSV viejo que era
+    # día/mes/año. Si no se convierten aquí, el resto del programa
+    # las lee con dayfirst=True y las interpreta MAL (ej. 09/03/2026
+    # = 3 de septiembre, se leía como 9 de marzo).
+    for col in ["Fecha de inicio", "Hasta"]:
+        if col in df_raw.columns:
+            df_raw[col] = pd.to_datetime(df_raw[col], format="%m/%d/%Y", errors="coerce")
+
+    # Columnas que el CSV nuevo no trae: se rellenan con valores neutros
+    # para que el resto del código no se rompa.
+    if "Estado" not in df_raw.columns:
+        df_raw["Estado"] = "Confirmada"  # Ingresos ya no incluye canceladas
+
+    for col in ["Número de adultos", "Número de niños", "Número de bebés"]:
+        if col not in df_raw.columns:
+            df_raw[col] = 0
+
+    return df_raw
+
+
+# =========================
 # Subir archivos
 # =========================
 if menu != "Housekeeping e Inventario":
-    archivos = st.file_uploader("📂 Sube tus archivos CSV de Airbnb", type="csv", accept_multiple_files=True)
+    archivos = st.file_uploader("📂 Sube tus archivos CSV de Airbnb (Reservas viejo o Ingresos > Próximos)", type="csv", accept_multiple_files=True)
 
     if not archivos:
         st.info("Sube al menos un archivo CSV para comenzar")
@@ -40,11 +90,16 @@ if menu != "Housekeeping e Inventario":
 
     frames = []
     for archivo in archivos:
-        df_temp = pd.read_csv(archivo)
+        df_temp = pd.read_csv(archivo, encoding="utf-8-sig")
+        df_temp = normalizar_reservas(df_temp)
         df_temp["__archivo__"] = archivo.name
         frames.append(df_temp)
 
     df = pd.concat(frames, ignore_index=True)
+
+    # Por si subes el mismo mes/cuenta dos veces sin querer
+    if "Código de confirmación" in df.columns:
+        df = df.drop_duplicates(subset=["Código de confirmación"], keep="first")
 else:
     df = pd.DataFrame() # Crea un archivo vacío en el fondo para que no dé error
 
