@@ -79,6 +79,245 @@ def normalizar_reservas(df_raw):
 
 
 # =========================
+# Funciones compartidas para cruzar Airbnb <-> Formulario de Check-in
+# (las usan tanto "Lista de huéspedes por departamento" como
+#  "Entradas y salidas por día")
+# =========================
+import unicodedata
+import re as _re
+from difflib import SequenceMatcher
+
+
+def normalizar_texto(texto):
+    if pd.isna(texto):
+        return ""
+    texto = str(texto).lower()
+    texto = unicodedata.normalize("NFD", texto)
+    texto = texto.encode("ascii", "ignore").decode("utf-8")
+    texto = texto.replace("-", " ")
+    texto = _re.sub(r"[^a-z0-9\s]", "", texto)
+    texto = _re.sub(r"\s+", " ", texto).strip()
+    return texto
+
+
+def limpiar_dni(dni):
+    if pd.isna(dni):
+        return ""
+    dni_str = str(dni).strip()
+    if dni_str.endswith(".0"):
+        dni_str = dni_str[:-2]
+    return dni_str
+
+
+def formatear_nombre_mostrar(nombre_completo):
+    if pd.isna(nombre_completo):
+        return "Huésped"
+    tokens = str(nombre_completo).strip().split()
+    if len(tokens) >= 2:
+        return f"{tokens[0].title()} {tokens[1].title()}"
+    elif tokens:
+        return tokens[0].title()
+    return "Huésped"
+
+
+def formatear_hora(hora_raw):
+    if pd.isna(hora_raw):
+        return "??"
+    try:
+        return hora_raw.strftime("%I:%M %p").lower().replace(":00", "")
+    except Exception:
+        s = str(hora_raw).lower()
+        return s.replace(":00", "").replace(".", "")
+
+
+COL_LLEGADA_FORM = "Fecha de Llegada | Arrival Date"
+COL_SALIDA_FORM = "Fecha de Salida | Departure Date"
+COL_DNI_FORM = "N° Documento de Identidad o Pasaporte | N° ID or Passport"
+COL_NOMBRE_FORM = "Nombre completo | Full Name"
+COL_DNI_AIRBNB = "N° Documento de Identidad o Pasaporte"
+
+
+def preparar_df_form(df_form_raw):
+    """Agrega las columnas normalizadas que se usan para cruzar con Airbnb."""
+    df_form = df_form_raw.copy()
+    df_form["fecha_in"] = pd.to_datetime(df_form[COL_LLEGADA_FORM], dayfirst=True, errors="coerce").dt.date
+    df_form["fecha_out"] = pd.to_datetime(df_form[COL_SALIDA_FORM], dayfirst=True, errors="coerce").dt.date
+    df_form["dni_clean"] = df_form[COL_DNI_FORM].apply(limpiar_dni)
+    df_form["nombre_norm"] = df_form[COL_NOMBRE_FORM].apply(normalizar_texto)
+    return df_form
+
+
+def preparar_df_airbnb_para_cruce(df_airbnb_raw):
+    df_airbnb = df_airbnb_raw.copy()
+    df_airbnb["fecha_in"] = pd.to_datetime(df_airbnb["Fecha de inicio"], dayfirst=True, errors="coerce").dt.date
+    df_airbnb["fecha_out"] = pd.to_datetime(df_airbnb["Hasta"], dayfirst=True, errors="coerce").dt.date
+    if COL_DNI_AIRBNB in df_airbnb.columns:
+        df_airbnb["dni_clean"] = df_airbnb[COL_DNI_AIRBNB].apply(limpiar_dni)
+    else:
+        df_airbnb["dni_clean"] = ""
+    df_airbnb["nombre_norm"] = df_airbnb["Nombre del huésped"].apply(normalizar_texto)
+    return df_airbnb
+
+
+def expandir_candidatos_form(df_form):
+    """
+    El formulario permite registrar hasta 4 huéspedes por reserva (titular +
+    3 acompañantes). El nombre que Airbnb muestra puede ser el de
+    CUALQUIERA de ellos (a veces el que reserva no es el mismo que llena
+    el form, o llena el form el acompañante). Esta función crea una fila
+    candidata por cada huésped nombrado, todas apuntando a la misma
+    reserva/fecha original, para poder buscar coincidencias con cualquiera
+    de los nombres, no solo el del titular.
+    """
+    filas = []
+    for idx, row in df_form.iterrows():
+        for suf in ["", ".1", ".2", ".3"]:
+            col_nombre = f"{COL_NOMBRE_FORM}{suf}"
+            col_dni = f"{COL_DNI_FORM}{suf}"
+            if col_nombre not in df_form.columns:
+                continue
+            nombre_val = row[col_nombre]
+            if pd.isna(nombre_val) or str(nombre_val).strip() == "":
+                continue
+            filas.append({
+                "nombre_norm": normalizar_texto(nombre_val),
+                "dni_clean": limpiar_dni(row[col_dni]) if col_dni in df_form.columns else "",
+                "fecha_in": row["fecha_in"],
+                "fecha_out": row["fecha_out"],
+                "__form_idx__": idx,
+            })
+    return pd.DataFrame(filas)
+
+
+def _score_nombre(tokens_ab, n_form):
+    """Puntaje por palabras en común + similitud aproximada (typos/apodos)."""
+    if not tokens_ab or not n_form:
+        # Si no hay nada que comparar de un lado (ej. nombre en otro
+        # alfabeto que quedó vacío al limpiar el texto), NO se puede
+        # decir que "se parece" a nada -> evita falsos positivos entre
+        # dos nombres vacíos.
+        return 0
+    tokens_form = set(n_form.split())
+    if not tokens_form:
+        return 0
+    overlap = len(tokens_ab.intersection(tokens_form))
+    if overlap > 0:
+        return overlap * 10
+    # Nada en común palabra por palabra: probamos similitud aproximada
+    # (útil para "Jose Perez" vs "J. Perez Gomez", tildes raras, etc.)
+    ratio = SequenceMatcher(None, " ".join(sorted(tokens_ab)), n_form).ratio()
+    return ratio * 5 if ratio >= 0.55 else 0
+
+
+def buscar_match_inteligente(row_airbnb, df_form_completo, df_candidatos, tipo_fecha_col, fecha_objetivo):
+    """
+    Busca la fila del formulario que corresponde a esta reserva de Airbnb.
+    Compara contra TODOS los huéspedes nombrados en cada formulario
+    (titular + hasta 3 acompañantes, vía df_candidatos), porque el nombre
+    de Airbnb puede corresponder a cualquiera de ellos.
+
+    Prueba varias señales, de la más confiable a la menos confiable, porque
+    en la práctica: el nombre de Airbnb no siempre es el del huésped real
+    que llena el form (reserva a nombre de otra persona), hay nombres
+    parecidos entre reservas distintas, etc.
+
+      1) DNI exacto (de cualquiera de los huéspedes)        -> "OK_DNI"
+      2) Nombre (con palabras en común o similar, de         -> "OK_NOMBRE"
+         cualquier huésped) + fecha exacta coinciden
+      3) Fecha de entrada Y salida coinciden EXACTO y hay   -> "OK_FECHA"
+         un único formulario con esa combinación (aunque
+         el nombre no calce - reserva a nombre de otro)
+      4) Mejor nombre parecido encontrado, aunque la fecha  -> "FECHA_DIFERENTE_xx"
+         no coincida (se muestra como advertencia, no como
+         "no llenó el form")
+
+    Devuelve siempre la fila COMPLETA del formulario original (no solo el
+    candidato), para poder leer horas, contar acompañantes, etc.
+    """
+    dni_ab = row_airbnb.get("dni_clean", "")
+    fin_ab = row_airbnb.get("fecha_in")
+    fout_ab = row_airbnb.get("fecha_out")
+    nombre_ab_tokens = set(str(row_airbnb.get("nombre_norm", "")).split())
+
+    def _fila_completa(idx_form):
+        return df_form_completo.loc[idx_form]
+
+    # 1) DNI exacto (de cualquiera de los huéspedes nombrados)
+    if isinstance(dni_ab, str) and len(dni_ab) > 4:
+        cand_dni = df_candidatos[df_candidatos["dni_clean"] == dni_ab]
+        if not cand_dni.empty:
+            return _fila_completa(cand_dni.iloc[0]["__form_idx__"]), "OK_DNI"
+
+    # Candidatos por nombre (con score de similitud), contra CUALQUIER
+    # huésped nombrado del formulario, no solo el titular
+    temp = df_candidatos.copy()
+    temp["score"] = temp["nombre_norm"].apply(lambda n: _score_nombre(nombre_ab_tokens, n))
+    umbral = 10 if len(nombre_ab_tokens) > 1 else 5
+    cand_nombre = temp[temp["score"] >= umbral].copy()
+
+    def _ordenar_por_score_y_cercania(cand):
+        """Si dos formularios comparten nombre (ej. la persona lo llenó dos
+        veces con datos distintos), preferimos el que tenga la fecha más
+        cercana a la fecha real de Airbnb, en vez del primero por índice."""
+        def _dist(f):
+            if pd.isna(f) or pd.isna(fecha_objetivo):
+                return 99999
+            return abs((f - fecha_objetivo).days)
+        cand = cand.copy()
+        cand["_dist"] = cand[tipo_fecha_col].apply(_dist)
+        return cand.sort_values(["score", "_dist"], ascending=[False, True])
+
+    # 2) Nombre parecido + fecha exacta
+    if not cand_nombre.empty:
+        match_exacto = cand_nombre[cand_nombre[tipo_fecha_col] == fecha_objetivo]
+        if not match_exacto.empty:
+            mejor = _ordenar_por_score_y_cercania(match_exacto).iloc[0]
+            return _fila_completa(mejor["__form_idx__"]), "OK_NOMBRE"
+
+    # 3) Si SÍ hay candidato por nombre pero su fecha no calza, hay que
+    #    devolver A ESA PERSONA con el aviso de fecha distinta — NUNCA
+    #    saltar a otro desconocido solo porque comparte fechas (eso
+    #    generaba el bug de mostrarle a Cecilia la hora de otro huésped).
+    if not cand_nombre.empty:
+        mejor = _ordenar_por_score_y_cercania(cand_nombre).iloc[0]
+        fecha_err = mejor[tipo_fecha_col]
+        fecha_str = fecha_err.strftime('%d/%m') if pd.notnull(fecha_err) else "no registrada"
+        return _fila_completa(mejor["__form_idx__"]), f"FECHA_DIFERENTE_{fecha_str}"
+
+    # 4) Nadie con nombre parecido: como último recurso, si AMBAS fechas
+    #    (entrada y salida) calzan exacto con un único formulario, lo
+    #    tomamos como la típica "reserva a nombre de otra persona".
+    if pd.notnull(fin_ab) and pd.notnull(fout_ab):
+        cand_fecha = df_form_completo[
+            (df_form_completo["fecha_in"] == fin_ab) & (df_form_completo["fecha_out"] == fout_ab)
+        ]
+        if len(cand_fecha) == 1:
+            return cand_fecha.iloc[0], "OK_FECHA"
+
+    return None, "NO_FOUND"
+
+
+def contar_huespedes_extra_form(form_row):
+    """
+    Cuenta cuántos huéspedes ADICIONALES (sin contar al titular) registró
+    el formulario, usando los bloques repetidos 'Nombre completo | Full Name.N'
+    que aparecen cuando marcan '¿Se hospedará otro huésped más?'.
+    Devuelve None si no hay fila de formulario (para no confundir "0 extra"
+    con "no sabemos").
+    """
+    if form_row is None:
+        return None
+    extra = 0
+    for suf in [".1", ".2", ".3"]:
+        col = f"{COL_NOMBRE_FORM}{suf}"
+        if col in form_row.index:
+            valor = form_row[col]
+            if pd.notna(valor) and str(valor).strip() != "":
+                extra += 1
+    return extra
+
+
+# =========================
 # Subir archivos
 # =========================
 if menu != "Housekeeping e Inventario":
@@ -271,6 +510,17 @@ elif menu == "Lista de huéspedes por departamento":
         data = df[(df[col_inicio] <= ff) & (df['Hasta'] >= fi)].copy()
         data = data.sort_values(['Codigo_corto', col_inicio])
 
+        # Preparamos el cruce con el formulario (si ya lo subieron) para
+        # sacar el +N real de huéspedes adicionales, en vez de depender
+        # de "Número de adultos/niños/bebés" (que el CSV nuevo de Airbnb
+        # ya no trae).
+        df_form_prep = None
+        df_candidatos = None
+        if "df_form" in st.session_state:
+            df_form_prep = preparar_df_form(st.session_state.df_form)
+            df_candidatos = expandir_candidatos_form(df_form_prep)
+            data = preparar_df_airbnb_para_cruce(data)
+
         if data.empty:
             st.warning("No hay reservas en ese rango")
         else:
@@ -282,10 +532,22 @@ elif menu == "Lista de huéspedes por departamento":
                     desde = r[col_inicio].strftime('%d/%m')
                     hasta = r['Hasta'].strftime('%d/%m')
                     nombre = str(r['Nombre del huésped']).lower()
-                    total = int(r['Total_huespedes'])
-                    extra = f" +{total-1}" if total > 1 else ""
 
-                    st.write(f"{desde}-{hasta}: {nombre}{extra}")
+                    extra_txt = ""
+                    if df_form_prep is not None:
+                        match_row, estado = buscar_match_inteligente(
+                            r, df_form_prep, df_candidatos, "fecha_in", r.get("fecha_in")
+                        )
+                        extra_n = contar_huespedes_extra_form(match_row)
+                        if extra_n is not None and extra_n > 0:
+                            extra_txt = f" +{extra_n}"
+                    else:
+                        # Sin formulario cargado: fallback al conteo viejo
+                        # (solo funciona si el CSV trae adultos/niños/bebés)
+                        total = int(r['Total_huespedes'])
+                        extra_txt = f" +{total-1}" if total > 1 else ""
+
+                    st.write(f"{desde}-{hasta}: {nombre}{extra_txt}")
 
 
 elif menu == "Entradas y salidas por día":
@@ -312,65 +574,11 @@ elif menu == "Entradas y salidas por día":
         st.session_state.mostrar_resultados = False
 
     # ==========================================
-    # 2. FUNCIONES DE LIMPIEZA
+    # 2 y 3. PREPARACIÓN DE DATOS (usando funciones compartidas)
     # ==========================================
-    def normalizar_texto(texto):
-        if pd.isna(texto): return ""
-        import unicodedata, re
-        texto = str(texto).lower()
-        texto = unicodedata.normalize("NFD", texto)
-        texto = texto.encode("ascii", "ignore").decode("utf-8")
-        texto = texto.replace("-", " ") 
-        texto = re.sub(r"[^a-z0-9\s]", "", texto)
-        texto = re.sub(r"\s+", " ", texto).strip()
-        return texto
-
-    def limpiar_dni(dni):
-        if pd.isna(dni): return ""
-        dni_str = str(dni).strip()
-        if dni_str.endswith(".0"):
-            dni_str = dni_str[:-2]
-        return dni_str
-    
-    def formatear_nombre_mostrar(nombre_completo):
-        if pd.isna(nombre_completo): return "Huésped"
-        tokens = str(nombre_completo).strip().split()
-        if len(tokens) >= 2:
-            return f"{tokens[0].title()} {tokens[1].title()}"
-        elif tokens:
-            return tokens[0].title()
-        return "Huésped"
-
-    def formatear_hora(hora_raw):
-        if pd.isna(hora_raw): return "??"
-        try:
-            return hora_raw.strftime("%I:%M %p").lower().replace(":00", "")
-        except:
-            s = str(hora_raw).lower()
-            return s.replace(":00", "").replace(".", "")
-
-    # ==========================================
-    # 3. PREPARACIÓN DE DATOS
-    # ==========================================
-    col_llegada_form = "Fecha de Llegada | Arrival Date"
-    col_salida_form = "Fecha de Salida | Departure Date"
-    col_dni_airbnb = "N° Documento de Identidad o Pasaporte"
-    
-    df_form["fecha_in"] = pd.to_datetime(df_form[col_llegada_form], dayfirst=True, errors="coerce").dt.date
-    df_form["fecha_out"] = pd.to_datetime(df_form[col_salida_form], dayfirst=True, errors="coerce").dt.date
-    
-    df_airbnb["fecha_in"] = pd.to_datetime(df_airbnb["Fecha de inicio"], dayfirst=True, errors="coerce").dt.date
-    df_airbnb["fecha_out"] = pd.to_datetime(df_airbnb["Hasta"], dayfirst=True, errors="coerce").dt.date
-
-    df_form["dni_clean"] = df_form["N° Documento de Identidad o Pasaporte | N° ID or Passport"].apply(limpiar_dni)
-    df_form["nombre_norm"] = df_form["Nombre completo | Full Name"].apply(normalizar_texto)
-    
-    if col_dni_airbnb in df_airbnb.columns:
-        df_airbnb["dni_clean"] = df_airbnb[col_dni_airbnb].apply(limpiar_dni)
-    else:
-        df_airbnb["dni_clean"] = ""
-
-    df_airbnb["nombre_norm"] = df_airbnb["Nombre del huésped"].apply(normalizar_texto)
+    df_form = preparar_df_form(df_form)
+    df_candidatos = expandir_candidatos_form(df_form)
+    df_airbnb = preparar_df_airbnb_para_cruce(df_airbnb)
 
     # ==========================================
     # 4. CONTROLES DE FECHA (FLECHAS)
@@ -407,54 +615,9 @@ elif menu == "Entradas y salidas por día":
                 st.session_state.mostrar_resultados = True
                 st.rerun()
 
-    # ==========================================
-    # 5. LÓGICA DE BÚSQUEDA CORREGIDA (Huéspedes Repetidos)
-    # ==========================================
-    
-    def buscar_match_inteligente(row_airbnb, df_todo_form, tipo_fecha_col, fecha_objetivo):
-        """
-        1. Busca a TODOS los posibles candidatos (por DNI o Nombre).
-        2. De esos candidatos, busca SI ALGUNO coincide con la fecha exacta.
-        3. Si no, devuelve el más reciente con error de fecha.
-        """
-        match_candidates = pd.DataFrame()
-        dni_ab = row_airbnb["dni_clean"]
-        
-        # A) Buscar candidatos por DNI
-        if isinstance(dni_ab, str) and len(dni_ab) > 4:
-            match_candidates = df_todo_form[df_todo_form["dni_clean"] == dni_ab]
-        
-        # B) Buscar candidatos por Nombre (si DNI falla)
-        if match_candidates.empty:
-            nombre_ab_tokens = set(row_airbnb["nombre_norm"].split())
-            
-            def calcular_score(n_form):
-                tokens_form = set(n_form.split())
-                return len(nombre_ab_tokens.intersection(tokens_form))
-
-            # Copia para calcular scores
-            temp_df = df_todo_form.copy()
-            temp_df["score"] = temp_df["nombre_norm"].apply(calcular_score)
-            
-            umbral = 2 if len(nombre_ab_tokens) > 1 else 1
-            match_candidates = temp_df[temp_df["score"] >= umbral]
-
-        if match_candidates.empty:
-            return None, "NO_FOUND"
-
-        # C) PRIORIZACIÓN POR FECHA (Aquí está el arreglo para Fernando)
-        # De todos los Fernandos encontrados, ¿hay alguno cuya fecha coincida con hoy?
-        match_perfecto = match_candidates[match_candidates[tipo_fecha_col] == fecha_objetivo]
-
-        if not match_perfecto.empty:
-            # ¡Bingo! Encontramos al Fernando de HOY
-            return match_perfecto.iloc[0], "OK"
-        else:
-            # Encontramos Fernandos, pero ninguno para hoy. Devolvemos el primero para avisar.
-            mejor_match = match_candidates.iloc[0] 
-            fecha_erronea = mejor_match[tipo_fecha_col]
-            fecha_str = fecha_erronea.strftime('%d/%m') if pd.notnull(fecha_erronea) else "??"
-            return mejor_match, f"FECHA_DIFERENTE_{fecha_str}"
+    # (la función buscar_match_inteligente ahora es compartida, definida
+    # arriba junto con normalizar_reservas, para poder usarla también en
+    # "Lista de huéspedes por departamento")
 
     # ==========================================
     # 6. RENDERIZADO
@@ -485,12 +648,13 @@ elif menu == "Entradas y salidas por día":
                     
                     # Llamamos a la nueva función inteligente
                     match_row, estado = buscar_match_inteligente(
-                        huesped, df_form, "fecha_out", fecha_actual
+                        huesped, df_form, df_candidatos, "fecha_out", fecha_actual
                     )
                     
-                    if estado == "OK":
-                        hora = formatear_hora(match_row["Hora de Salida Aprox | Approximate Departure Time"])
-                        txt_salida = f"Sale {nombre_show} {hora}"
+                    if estado.startswith("OK"):
+                        hora = formatear_hora(match_row["Hora de Salida Aprox (Antes de 11:00 am) | Approximate Departure Time (Before 11:00 am)"])
+                        aviso = " (nombre distinto en form)" if estado == "OK_FECHA" else ""
+                        txt_salida = f"Sale {nombre_show} {hora}{aviso}"
                     elif estado.startswith("FECHA_DIFERENTE"):
                         fecha_err = estado.split("_")[-1]
                         txt_salida = f"⚠️ Sale {nombre_show} (Form dice: {fecha_err})"
@@ -506,12 +670,13 @@ elif menu == "Entradas y salidas por día":
                     nombre_show = formatear_nombre_mostrar(huesped["Nombre del huésped"])
                     
                     match_row, estado = buscar_match_inteligente(
-                        huesped, df_form, "fecha_in", fecha_actual
+                        huesped, df_form, df_candidatos, "fecha_in", fecha_actual
                     )
                     
-                    if estado == "OK":
-                        hora = formatear_hora(match_row["Hora de Llegada Aprox | Approximate Arrival Time"])
-                        txt_entrada = f"Entra {nombre_show} {hora}"
+                    if estado.startswith("OK"):
+                        hora = formatear_hora(match_row["Hora de Llegada (Despues de 3:00 pm) | Approximate Arrival Time (After 3:00 pm)"])
+                        aviso = " (nombre distinto en form)" if estado == "OK_FECHA" else ""
+                        txt_entrada = f"Entra {nombre_show} {hora}{aviso}"
                     elif estado.startswith("FECHA_DIFERENTE"):
                         fecha_err = estado.split("_")[-1]
                         txt_entrada = f"⚠️ Entra {nombre_show} (Form dice: {fecha_err})"
