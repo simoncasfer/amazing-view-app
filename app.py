@@ -373,10 +373,10 @@ if "Hasta" in df.columns:
 # =========================
 codigo_map = {
     "Central Stay Near Miraflores w/ Pool & Gym": "203 (Surquillo)",
-    "Amazing 2BR | City View Balcony | Near San Isidro": "1006 (Surquillo)",
+    "Amazing 2BR | Rooftop Pool + Gym | Near San Isidro": "1006 (Surquillo)",
     "Elegant Designer 1BR | Near San Isidro": "307 (Magdalena)",
     "Modern 1BR w/ Pool & Gym Near Miraflores": "508",
-    "Luxury Designer 1BR w/ Balcony": "2105 (Jesus Maria)",
+    "Luxury 1BR + Balcony | Near San Isidro": "2105 (Jesus Maria)",
     "Amazing View + Pool + Gym - Barranco & Miraflores": "1103",
     "Amazing View 2 + Pool + Gym- Barranco & Miraflores": "1003",
     "Amazing View 3 + Pool + Gym- Barranco & Miraflores": "1415",
@@ -392,7 +392,7 @@ codigo_map = {
     "Comfortable 3BR Apartment with City View": "2007 (Pueblo Libre)",
     "Bright 2BR Apartment in Great Location": "401 (Canevaro)",
     "Spacious Designer 1BR w/ Balcony Near San Isidro": "1103 Botanika (Jesús María)",
-    "San Bartolo | Vista al mar + Piscina & Gym": "302 MIRA (San Bartolo)"
+    "Depa frente al mar | Piscina | San Bartolo": "302 MIRA (San Bartolo)"
 }
 
 if "Anuncio" in df.columns:
