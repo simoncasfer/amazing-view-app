@@ -376,23 +376,23 @@ codigo_map = {
     "Amazing 2BR | Rooftop Pool + Gym | Near San Isidro": "1006 (Surquillo)",
     "Elegant Designer 1BR | Near San Isidro": "307 (Magdalena)",
     "Modern 1BR w/ Pool & Gym Near Miraflores": "508",
-    "Luxury 1BR + Balcony | Near San Isidro": "2105 (Jesus Maria)",
+    "Apartamento de diseño + balcón · Cerca San Isidro": "2105 (Jesus Maria)",
     "Amazing View + Pool + Gym - Barranco & Miraflores": "1103",
     "Amazing View 2 + Pool + Gym- Barranco & Miraflores": "1003",
     "Amazing View 3 + Pool + Gym- Barranco & Miraflores": "1415",
     "Amazing View 4 + Pool + Gym- Barranco & Miraflores": "1008",
     "Amazing View 5 + Pool + Gym- Barranco & Miraflores": "1716",
-    "Rooftop Pool & Gym | 1BR | Barranco & Miraflores": "1908",
+    "Rooftop Pool & City View · Modern 1BR Barranco": "1908",
     "Stylish 1BR | Pool & Gym | Near Miraflores": "1010",
     "Amazing 2BR Apart w/ Pool & Gym - Barranco": "810",
     "Modern 2BR with Panoramic City View & Balcony": "1402 (San Isidro)",
     "Park View 2BR w/ Pool & Gym Near San Isidro": "1101 Castilla (Lince)",
-    "Ocean View 2BR w/ Pool & Gym & Sauna": "1303 (San Miguel)",
+    "Despierta frente al mar · 2 hab, piscina y sauna": "1303 (San Miguel)",
     "Casa increible con AC + Jardín + Centrico": "Casa de Tarapoto",
-    "Comfortable 3BR Apartment with City View": "2007 (Pueblo Libre)",
-    "Bright 2BR Apartment in Great Location": "401 (Canevaro)",
-    "Spacious Designer 1BR w/ Balcony Near San Isidro": "1103 Botanika (Jesús María)",
-    "Depa frente al mar | Piscina | San Bartolo": "302 MIRA (San Bartolo)"
+    "Familiar 3 hab, 2 baños y vista · Pueblo Libre": "2007 (Pueblo Libre)",
+    "Amplio apartamento 2 hab, 2 baños · Lince céntrico": "401 (Canevaro)",
+    "Diseño con balcón y vista · 1BR cerca San Isidro": "1103 Botanika (Jesús María)",
+    "Vista al mar | Piscina | 2 hab | San Bartolo": "302 MIRA (San Bartolo)"
 }
 
 if "Anuncio" in df.columns:
